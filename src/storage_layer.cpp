@@ -319,10 +319,16 @@ void FileStorageLayer::close() {
     is_open = false;
 }
 
-// Helper: Serialize a row according to schema
+// Helper: Serialize a row according to schema, with TupleHeader
 static std::vector<uint8_t> serialize_row(const std::vector<ColumnSchema>& schema, const std::vector<std::string>& values) {
+    TupleHeader header{};
+    header.field_count = schema.size();
     std::vector<uint8_t> data;
+    size_t offset = sizeof(TupleHeader);
+    // Reserve space for header
+    data.resize(sizeof(TupleHeader), 0);
     for (size_t i = 0; i < schema.size(); ++i) {
+        header.offsets[i] = offset;
         const auto& col = schema[i];
         const auto& val = values[i];
         if (col.type == ColumnType::INT) {
@@ -330,13 +336,40 @@ static std::vector<uint8_t> serialize_row(const std::vector<ColumnSchema>& schem
             uint8_t buf[4];
             std::memcpy(buf, &intval, 4);
             data.insert(data.end(), buf, buf + 4);
+            offset += 4;
         } else if (col.type == ColumnType::TEXT) {
             uint32_t len = val.size();
             data.insert(data.end(), reinterpret_cast<uint8_t*>(&len), reinterpret_cast<uint8_t*>(&len) + 4);
             data.insert(data.end(), val.begin(), val.end());
+            offset += 4 + len;
         }
     }
+    // Write header at the start
+    std::memcpy(data.data(), &header, sizeof(TupleHeader));
     return data;
+}
+
+// Helper: Deserialize a row using TupleHeader and schema
+static std::vector<std::string> deserialize_row(const std::vector<ColumnSchema>& schema, const std::vector<uint8_t>& data) {
+    std::vector<std::string> values;
+    if (data.size() < sizeof(TupleHeader)) return values;
+    TupleHeader header;
+    std::memcpy(&header, data.data(), sizeof(TupleHeader));
+    for (size_t i = 0; i < schema.size(); ++i) {
+        const auto& col = schema[i];
+        size_t field_offset = header.offsets[i];
+        if (col.type == ColumnType::INT) {
+            int32_t intval;
+            std::memcpy(&intval, data.data() + field_offset, 4);
+            values.push_back(std::to_string(intval));
+        } else if (col.type == ColumnType::TEXT) {
+            uint32_t len;
+            std::memcpy(&len, data.data() + field_offset, 4);
+            std::string str(reinterpret_cast<const char*>(data.data() + field_offset + 4), len);
+            values.push_back(str);
+        }
+    }
+    return values;
 }
 
 void FileStorageLayer::create(const std::string& table, const std::vector<ColumnSchema>& schema) {
@@ -403,21 +436,19 @@ int FileStorageLayer::insert(const std::string& table, const std::vector<std::st
     }
 }
 
-std::vector<uint8_t> FileStorageLayer::get(const std::string& table, int record_id) {
+std::vector<std::string> FileStorageLayer::get(const std::string& table, int record_id) {
     if (!is_open) throw std::runtime_error("Storage not open");
-
     const TableMetadata& metadata = get_table_metadata(table);
+    std::vector<ColumnSchema> schema(metadata.columns, metadata.columns + metadata.column_count);
     uint32_t current_page_id = metadata.first_data_page;
-
     while (current_page_id != INVALID_PAGE_ID) {
         Page& page = get_or_load_page(current_page_id);
         auto record = page.get_record(record_id);
         if (record.has_value()) {
-            return record.value();
+            return deserialize_row(schema, record.value());
         }
         current_page_id = page.get_next_page_id();
     }
-
     throw std::runtime_error("Record not found");
 }
 
@@ -576,34 +607,30 @@ Page& FileStorageLayer::find_free_page_for_table(const std::string& table_name, 
     throw std::runtime_error("No free page found");
 }
 
-std::vector<std::vector<uint8_t>> FileStorageLayer::scan(
+std::vector<std::vector<std::string>> FileStorageLayer::scan(
     const std::string& table,
-    const std::optional<std::function<bool(int, const std::vector<uint8_t>&)>>& /*callback*/,
+    const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& /*callback*/,
     const std::optional<std::vector<int>>& /*projection*/,
-    const std::optional<std::function<bool(const std::vector<uint8_t>&)>>& /*filter_func*/)
+    const std::optional<std::function<bool(const std::vector<std::string>&)>>& /*filter_func*/)
 {
     if (!is_open) {
         throw std::runtime_error("Storage not open");
     }
-
-    std::vector<std::vector<uint8_t>> results;
+    std::vector<std::vector<std::string>> results;
     const TableMetadata& metadata = get_table_metadata(table);
+    std::vector<ColumnSchema> schema(metadata.columns, metadata.columns + metadata.column_count);
     uint32_t current_page_id = metadata.first_data_page;
-
     while (current_page_id != INVALID_PAGE_ID) {
         Page& page = get_or_load_page(current_page_id);
-
         for (const auto& slot : page.get_slots()) {
             if (slot.is_occupied()) {
                 auto record_data = page.get_record(slot.record_id);
                 if (record_data.has_value()) {
-                    results.push_back(std::move(record_data.value()));
+                    results.push_back(deserialize_row(schema, record_data.value()));
                 }
             }
         }
-
         current_page_id = page.get_next_page_id();
     }
-
     return results;
 }

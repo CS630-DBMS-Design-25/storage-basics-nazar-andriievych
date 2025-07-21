@@ -104,6 +104,12 @@ private:
     void compact_page();
 };
 
+// Tuple header for variable-length fields
+struct TupleHeader {
+    uint16_t field_count;
+    uint16_t offsets[16]; // Offset of each field in the tuple (for TEXT fields, points to start of data)
+};
+
 struct TableMetadata {
     char name[64];
     uint32_t first_data_page;
@@ -186,8 +192,11 @@ public:
 
     /**
      * Retrieve a record by its unique ID from the specified table.
+     * @param table Table name
+     * @param record_id Record ID
+     * @return Vector of string values (decoded)
      */
-    virtual std::vector<uint8_t> get(const std::string& table, int record_id) = 0;
+    virtual std::vector<std::string> get(const std::string& table, int record_id) = 0;
 
     /**
      * Update an existing record identified by record ID.
@@ -204,12 +213,14 @@ public:
 
     /**
      * Scan records in a table optionally using projection and filter. Callback is optional.
+     * @param table Table name
+     * @return Vector of rows, each row is a vector of string values (decoded)
      */
-    virtual std::vector<std::vector<uint8_t>> scan(
+    virtual std::vector<std::vector<std::string>> scan(
         const std::string& table,
-        const std::optional<std::function<bool(int, const std::vector<uint8_t>&)>>& callback = std::nullopt,
+        const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& callback = std::nullopt,
         const std::optional<std::vector<int>>& projection = std::nullopt,
-        const std::optional<std::function<bool(const std::vector<uint8_t>&)>>& filter_func = std::nullopt) = 0;
+        const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt) = 0;
 
     /**
      * Persist all buffered data immediately to disk.
@@ -230,15 +241,16 @@ public:
     void close() override;
     void create(const std::string& table, const std::vector<ColumnSchema>& schema) override;
     int insert(const std::string& table, const std::vector<std::string>& values) override;
-    std::vector<uint8_t> get(const std::string& table, int record_id) override;
+    std::vector<std::string> get(const std::string& table, int record_id) override;
+    std::vector<std::vector<std::string>> scan(
+        const std::string& table,
+        const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& callback = std::nullopt,
+        const std::optional<std::vector<int>>& projection = std::nullopt,
+        const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt) override;
+    void flush() override;
+
     void update(const std::string& table, int record_id, const std::vector<std::string>& values) override;
     void delete_record(const std::string& table, int record_id) override;
-    std::vector<std::vector<uint8_t>> scan(
-        const std::string& table,
-        const std::optional<std::function<bool(int, const std::vector<uint8_t>&)>>& callback = std::nullopt,
-        const std::optional<std::vector<int>>& projection = std::nullopt,
-        const std::optional<std::function<bool(const std::vector<uint8_t>&)>>& filter_func = std::nullopt) override;
-    void flush() override;
 
 private:
     bool is_open;

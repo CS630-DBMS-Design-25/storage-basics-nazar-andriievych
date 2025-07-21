@@ -150,8 +150,13 @@ int main() {
             }
             try {
                 int record_id = std::stoi(args[2]);
-                auto record = storage.get(args[1], record_id);
-                std::cout << "Retrieved record: " << bytes_to_string(record) << std::endl;
+                auto values = storage.get(args[1], record_id);
+                std::cout << "Retrieved record: ";
+                for (size_t i = 0; i < values.size(); ++i) {
+                    if (i > 0) std::cout << ",";
+                    std::cout << values[i];
+                }
+                std::cout << std::endl;
             } catch (const std::exception& e) {
                 std::cout << "Error: " << e.what() << std::endl;
             }
@@ -185,7 +190,18 @@ int main() {
                 std::cout << "Error: Missing table argument. Usage: scan <table> [--projection <field1> <field2> ...]\n";
                 continue;
             }
-
+            try {
+                auto rows = storage.scan(args[1]);
+                for (const auto& values : rows) {
+                    for (size_t i = 0; i < values.size(); ++i) {
+                        if (i > 0) std::cout << ",";
+                        std::cout << values[i];
+                    }
+                    std::cout << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cout << "Error: " << e.what() << std::endl;
+            }
         }
         else if (command == "flush") {
             try {
