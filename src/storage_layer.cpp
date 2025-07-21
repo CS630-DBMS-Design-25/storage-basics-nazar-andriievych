@@ -4,6 +4,8 @@
 #include <chrono>
 #include <fstream>
 #include <filesystem>
+#include <stdexcept>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -317,12 +319,57 @@ void FileStorageLayer::close() {
     is_open = false;
 }
 
-int FileStorageLayer::insert(const std::string& table, const std::vector<uint8_t>& record) {
+// Helper: Serialize a row according to schema
+static std::vector<uint8_t> serialize_row(const std::vector<ColumnSchema>& schema, const std::vector<std::string>& values) {
+    std::vector<uint8_t> data;
+    for (size_t i = 0; i < schema.size(); ++i) {
+        const auto& col = schema[i];
+        const auto& val = values[i];
+        if (col.type == ColumnType::INT) {
+            int32_t intval = std::stoi(val);
+            uint8_t buf[4];
+            std::memcpy(buf, &intval, 4);
+            data.insert(data.end(), buf, buf + 4);
+        } else if (col.type == ColumnType::TEXT) {
+            uint32_t len = val.size();
+            data.insert(data.end(), reinterpret_cast<uint8_t*>(&len), reinterpret_cast<uint8_t*>(&len) + 4);
+            data.insert(data.end(), val.begin(), val.end());
+        }
+    }
+    return data;
+}
+
+void FileStorageLayer::create(const std::string& table, const std::vector<ColumnSchema>& schema) {
+    if (catalog_.get_table(table).has_value()) {
+        throw std::runtime_error("Table already exists");
+    }
+    TableMetadata new_table{};
+    std::memset(&new_table, 0, sizeof(TableMetadata));
+    size_t copy_len = std::min(table.size(), static_cast<size_t>(MAX_TABLE_NAME_LEN));
+    table.copy(new_table.name, copy_len);
+    new_table.name[copy_len] = '\0';
+    new_table.first_data_page = INVALID_PAGE_ID;
+    new_table.last_data_page = INVALID_PAGE_ID;
+    new_table.record_count = 0;
+    new_table.next_record_id = 1;
+    new_table.free_space_head = INVALID_PAGE_ID;
+    new_table.column_count = schema.size();
+    for (size_t i = 0; i < schema.size() && i < 16; ++i) {
+        new_table.columns[i] = schema[i];
+    }
+    catalog_.add_table(table);
+    catalog_.update_table(new_table);
+    table_cache_[table] = new_table;
+    catalog_.set_dirty();
+}
+
+int FileStorageLayer::insert(const std::string& table, const std::vector<std::string>& values) {
     if (!is_open) throw std::runtime_error("Storage not open");
-
     TableMetadata& metadata = get_table_metadata(table);
+    if (values.size() != metadata.column_count) throw std::runtime_error("Column count mismatch");
+    std::vector<ColumnSchema> schema(metadata.columns, metadata.columns + metadata.column_count);
+    std::vector<uint8_t> record = serialize_row(schema, values);
     uint32_t record_id = metadata.next_record_id++;
-
     try {
         Page& last_page = get_last_page_for_table(table);
         if (last_page.insert_record(record_id, record).has_value()) {
@@ -330,22 +377,18 @@ int FileStorageLayer::insert(const std::string& table, const std::vector<uint8_t
             catalog_.update_table(metadata);
             return record_id;
         }
-
         Page& free_page = find_free_page_for_table(table, record.size());
         if (free_page.insert_record(record_id, record).has_value()) {
             metadata.record_count++;
             catalog_.update_table(metadata);
             return record_id;
         }
-
         uint32_t new_page_id = allocate_new_page();
         Page& new_page = get_or_create_page(new_page_id);
         new_page.insert_record(record_id, record);
-
         if (metadata.last_data_page == INVALID_PAGE_ID) {
             metadata.first_data_page = new_page_id;
-        }
-        else {
+        } else {
             Page& prev_last = get_or_load_page(metadata.last_data_page);
             prev_last.set_next_page_id(new_page_id);
             page_cache_[metadata.last_data_page] = prev_last;
@@ -353,10 +396,8 @@ int FileStorageLayer::insert(const std::string& table, const std::vector<uint8_t
         metadata.last_data_page = new_page_id;
         metadata.record_count++;
         catalog_.update_table(metadata);
-
         return record_id;
-    }
-    catch (...) {
+    } catch (...) {
         metadata.next_record_id--;
         throw;
     }
@@ -380,12 +421,13 @@ std::vector<uint8_t> FileStorageLayer::get(const std::string& table, int record_
     throw std::runtime_error("Record not found");
 }
 
-void FileStorageLayer::update(const std::string& table, int record_id, const std::vector<uint8_t>& updated_record) {
+void FileStorageLayer::update(const std::string& table, int record_id, const std::vector<std::string>& values) {
     if (!is_open) throw std::runtime_error("Storage not open");
-
-    const TableMetadata& metadata = get_table_metadata(table);
+    TableMetadata& metadata = get_table_metadata(table);
+    if (values.size() != metadata.column_count) throw std::runtime_error("Column count mismatch");
+    std::vector<ColumnSchema> schema(metadata.columns, metadata.columns + metadata.column_count);
+    std::vector<uint8_t> updated_record = serialize_row(schema, values);
     uint32_t current_page_id = metadata.first_data_page;
-
     while (current_page_id != INVALID_PAGE_ID) {
         Page& page = get_or_load_page(current_page_id);
         if (page.update_record(record_id, updated_record)) {
@@ -393,7 +435,6 @@ void FileStorageLayer::update(const std::string& table, int record_id, const std
         }
         current_page_id = page.get_next_page_id();
     }
-
     throw std::runtime_error("Record not found for update");
 }
 
@@ -499,22 +540,10 @@ TableMetadata& FileStorageLayer::get_table_metadata(const std::string& table_nam
     if (cache_it != table_cache_.end()) {
         return cache_it->second;
     }
-
     auto table_opt = catalog_.get_table(table_name);
-
     if (!table_opt.has_value()) {
-        if (!catalog_.add_table(table_name)) {
-            throw std::runtime_error("Failed to create table (possibly reached max tables limit)");
-        }
-
-        table_opt = catalog_.get_table(table_name);
-        if (!table_opt.has_value()) {
-            throw std::runtime_error("Failed to retrieve newly created table");
-        }
-
-        catalog_.set_dirty();
+        throw std::runtime_error("Table does not exist");
     }
-
     auto [it, _] = table_cache_.emplace(table_name, table_opt.value());
     return it->second;
 }

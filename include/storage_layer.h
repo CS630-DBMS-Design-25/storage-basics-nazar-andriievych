@@ -16,6 +16,19 @@ constexpr uint32_t MAX_PAGE_ID = UINT32_MAX - 1;
 constexpr uint32_t CATALOG_PAGE_ID = 0;
 constexpr uint32_t MAX_TABLE_NAME_LEN = 63;
 
+// New: Supported column types
+enum class ColumnType : uint8_t {
+    INT = 0, // 4 bytes
+    TEXT = 1 // variable size
+};
+
+// New: Column schema definition
+struct ColumnSchema {
+    char name[32];
+    ColumnType type;
+    uint32_t size; // Only used for INT (fixed size), ignored for TEXT
+};
+
 enum PageFlags : uint8_t {
     PAGE_CLEAN = 0x00,
     PAGE_DIRTY = 0x01,
@@ -98,6 +111,9 @@ struct TableMetadata {
     uint32_t record_count;
     uint32_t next_record_id;
     uint32_t free_space_head;
+    // New: Schema
+    uint32_t column_count;
+    ColumnSchema columns[16]; // Max 16 columns per table for simplicity
 };
 
 struct CatalogHeader {
@@ -155,9 +171,18 @@ public:
     virtual void close() = 0;
 
     /**
-     * Insert a new record into the specified table, returning a unique record ID.
+     * Create table with schema.
+     * @param table Table name
+     * @param schema Vector of ColumnSchema (name, type, size)
      */
-    virtual int insert(const std::string& table, const std::vector<uint8_t>& record) = 0;
+    virtual void create(const std::string& table, const std::vector<ColumnSchema>& schema) = 0;
+
+    /**
+     * Insert a new record into the specified table, returning a unique record ID.
+     * @param table Table name
+     * @param values Vector of string values (must match schema)
+     */
+    virtual int insert(const std::string& table, const std::vector<std::string>& values) = 0;
 
     /**
      * Retrieve a record by its unique ID from the specified table.
@@ -166,8 +191,11 @@ public:
 
     /**
      * Update an existing record identified by record ID.
+     * @param table Table name
+     * @param record_id Record ID
+     * @param values Vector of string values (must match schema)
      */
-    virtual void update(const std::string& table, int record_id, const std::vector<uint8_t>& updated_record) = 0;
+    virtual void update(const std::string& table, int record_id, const std::vector<std::string>& values) = 0;
 
     /**
      * Delete a record identified by its unique ID.
@@ -200,9 +228,10 @@ public:
 
     void open(const std::string& path) override;
     void close() override;
-    int insert(const std::string& table, const std::vector<uint8_t>& record) override;
+    void create(const std::string& table, const std::vector<ColumnSchema>& schema) override;
+    int insert(const std::string& table, const std::vector<std::string>& values) override;
     std::vector<uint8_t> get(const std::string& table, int record_id) override;
-    void update(const std::string& table, int record_id, const std::vector<uint8_t>& updated_record) override;
+    void update(const std::string& table, int record_id, const std::vector<std::string>& values) override;
     void delete_record(const std::string& table, int record_id) override;
     std::vector<std::vector<uint8_t>> scan(
         const std::string& table,
