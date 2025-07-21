@@ -252,6 +252,7 @@ public:
      * Persist all buffered data immediately to disk.
      */
     virtual void flush() = 0;
+    virtual std::vector<std::string> get_column_names(const std::string& table) = 0;
 };
 
 /**
@@ -275,6 +276,7 @@ public:
         const std::optional<std::vector<int>>& projection = std::nullopt,
         const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt) override;
     void flush() override;
+    std::vector<std::string> get_column_names(const std::string& table) override;
 
     void delete_record(const std::string& table, uint32_t record_id) override;
 

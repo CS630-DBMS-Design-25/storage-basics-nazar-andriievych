@@ -33,8 +33,44 @@ constexpr char HELP_MESSAGE[] =
     "  help                         - Display this help message\n"
     "  exit/quit                    - Exit the program\n";
 
+// --- ANSI Color Macros ---
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BOLD    "\033[1m"
+#define COLOR_UNDER   "\033[4m"
+#define COLOR_RED     "\033[31m"
+#define COLOR_GREEN   "\033[32m"
+#define COLOR_YELLOW  "\033[33m"
+#define COLOR_BLUE    "\033[34m"
+#define COLOR_CYAN    "\033[36m"
+#define COLOR_WHITE   "\033[37m"
+
+// --- Pretty Print Helpers ---
+void print_success(const std::string& msg) {
+    std::cout << COLOR_GREEN << msg << COLOR_RESET << std::endl;
+}
+void print_error(const std::string& msg) {
+    std::cout << COLOR_RED << msg << COLOR_RESET << std::endl;
+}
+void print_prompt() {
+    std::cout << COLOR_CYAN << "storage-cli> " << COLOR_RESET;
+}
 void print_help() {
-    std::cout << HELP_MESSAGE;
+    std::cout << COLOR_BOLD << HELP_MESSAGE << COLOR_RESET;
+}
+void print_table_header(const std::vector<std::string>& headers) {
+    std::cout << COLOR_UNDER << COLOR_BOLD;
+    for (size_t i = 0; i < headers.size(); ++i) {
+        if (i > 0) std::cout << " | ";
+        std::cout << headers[i];
+    }
+    std::cout << COLOR_RESET << std::endl;
+}
+void print_table_row(const std::vector<std::string>& values) {
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) std::cout << " | ";
+        std::cout << values[i];
+    }
+    std::cout << std::endl;
 }
 
 // Convert a string to a vector of bytes
@@ -96,14 +132,6 @@ void run_command(Func&& f) {
     }
 }
 
-void print_csv_row(const std::vector<std::string>& values) {
-    for (size_t i = 0; i < values.size(); ++i) {
-        if (i > 0) std::cout << ",";
-        std::cout << values[i];
-    }
-    std::cout << std::endl;
-}
-
 ColumnSchema parse_column_schema(const std::string& spec) {
     auto pos = spec.find(":");
     if (pos == std::string::npos) {
@@ -124,11 +152,11 @@ ColumnSchema parse_column_schema(const std::string& spec) {
 int main() {
     FileStorageLayer storage;
 
-    std::cout << HELP_MESSAGE;
+    print_help();
 
     while (true) {
         std::string input;
-        std::cout << PROMPT;
+        print_prompt();
         std::getline(std::cin, input);
 
         if (input.empty()) {
@@ -146,12 +174,12 @@ int main() {
             if (!check_args(args, 2, "Error: Missing path argument")) continue;
             run_command([&] {
                 storage.open(args[1]);
-                std::cout << "Storage opened at " << args[1] << std::endl;
+                print_success("Storage opened at " + args[1]);
             });
         } else if (command == CMD_CLOSE) {
             run_command([&] {
                 storage.close();
-                std::cout << "Storage closed" << std::endl;
+                print_success("Storage closed");
             });
         } else if (command == "create") {
             if (!check_args(args, 3, "Error: Usage: create <table> <col1>:<type1> ...")) continue;
@@ -162,54 +190,58 @@ int main() {
                 }
                 run_command([&] {
                     storage.create(args[1], schema);
-                    std::cout << "Table created: " << args[1] << std::endl;
+                    print_success("Table created: " + args[1]);
                 });
             } catch (const std::exception& e) {
-                std::cout << "Error: " << e.what() << std::endl;
+                print_error(std::string("Error: ") + e.what());
             }
         } else if (command == CMD_INSERT) {
             if (!check_args(args, 3, "Error: Usage: insert <table> <val1,val2,...>")) continue;
             run_command([&] {
                 int record_id = storage.insert(args[1], parse_values(args[2]));
-                std::cout << "Record inserted with ID " << record_id << std::endl;
+                print_success("Record inserted with ID " + std::to_string(record_id));
             });
         } else if (command == CMD_GET) {
             if (!check_args(args, 3, "Error: Missing arguments. Usage: get <table> <record_id>")) continue;
             run_command([&] {
                 int record_id = std::stoi(args[2]);
                 auto values = storage.get(args[1], record_id);
-                std::cout << "Retrieved record: ";
-                print_csv_row(values);
+                std::cout << COLOR_BOLD << "Retrieved record: " << COLOR_RESET;
+                print_table_row(values);
             });
         } else if (command == CMD_UPDATE) {
             if (!check_args(args, 4, "Error: Usage: update <table> <record_id> <val1,val2,...>")) continue;
             run_command([&] {
                 int record_id = std::stoi(args[2]);
                 storage.update(args[1], record_id, parse_values(args[3]));
-                std::cout << "Record updated" << std::endl;
+                print_success("Record updated");
             });
         } else if (command == CMD_DELETE) {
             if (!check_args(args, 3, "Error: Missing arguments. Usage: delete <table> <record_id>")) continue;
             run_command([&] {
                 int record_id = std::stoi(args[2]);
                 storage.delete_record(args[1], record_id);
-                std::cout << "Record deleted" << std::endl;
+                print_success("Record deleted");
             });
         } else if (command == CMD_SCAN) {
             if (!check_args(args, 2, "Error: Missing table argument. Usage: scan <table> [--projection <field1> <field2> ...]")) continue;
             run_command([&] {
                 auto rows = storage.scan(args[1]);
+                if (!rows.empty()) {
+                    auto headers = storage.get_column_names(args[1]);
+                    print_table_header(headers);
+                }
                 for (const auto& values : rows) {
-                    print_csv_row(values);
+                    print_table_row(values);
                 }
             });
         } else if (command == CMD_FLUSH) {
             run_command([&] {
                 storage.flush();
-                std::cout << "Storage flushed" << std::endl;
+                print_success("Storage flushed");
             });
         } else {
-            std::cout << "Unknown command: " << command << "\nType 'help' for available commands" << std::endl;
+            print_error("Unknown command: " + command + "\nType 'help' for available commands");
         }
     }
 

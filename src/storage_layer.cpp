@@ -674,3 +674,12 @@ std::vector<std::vector<std::string>> FileStorageLayer::scan(
     }
     return results;
 }
+
+std::vector<std::string> FileStorageLayer::get_column_names(const std::string& table) {
+    const TableMetadata& meta = get_table_metadata(table);
+    std::vector<std::string> names;
+    for (size_t i = 0; i < meta.column_count; ++i) {
+        names.push_back(meta.columns[i].name);
+    }
+    return names;
+}
