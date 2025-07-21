@@ -8,6 +8,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
+#include <bitset>
 
 constexpr uint32_t PAGE_SIZE = 8192;
 constexpr uint32_t INVALID_PAGE_ID = UINT32_MAX;
@@ -15,6 +16,7 @@ constexpr uint32_t MAX_TABLES = 256;
 constexpr uint32_t MAX_PAGE_ID = UINT32_MAX - 1;
 constexpr uint32_t CATALOG_PAGE_ID = 0;
 constexpr uint32_t MAX_TABLE_NAME_LEN = 63;
+constexpr uint32_t IDS_PER_PAGE = 1024;
 
 // New: Supported column types
 enum class ColumnType : uint8_t {
@@ -53,6 +55,9 @@ struct PageHeader {
     uint32_t next_page_id;
     uint8_t flags;
     uint32_t lsn;
+    // New: ID range for this page
+    uint32_t id_range_start;
+    uint32_t id_range_end; // exclusive
 
     void initialize(uint32_t id) {
         page_id = id;
@@ -62,6 +67,8 @@ struct PageHeader {
         next_page_id = INVALID_PAGE_ID;
         flags = PAGE_CLEAN;
         lsn = 0;
+        id_range_start = id;
+        id_range_end = id + IDS_PER_PAGE;
     }
 };
 
@@ -77,8 +84,9 @@ struct Slot {
 
 class Page {
 public:
-    Page() : Page(INVALID_PAGE_ID) {}
+    Page() : Page(INVALID_PAGE_ID, 0) {}
     Page(uint32_t page_id);
+    Page(uint32_t page_id, uint32_t id_range_start);
 
     std::optional<uint32_t> insert_record(uint32_t record_id, const std::vector<uint8_t>& data);
     std::optional<std::vector<uint8_t>> get_record(uint32_t record_id) const;
@@ -93,6 +101,14 @@ public:
     std::vector<Slot>& get_slots() { return slots_; }
 	void set_next_page_id(uint32_t next_page_id) { header_.next_page_id = next_page_id; }
 
+    // Getters/setters for id range
+    uint32_t get_id_range_start() const { return header_.id_range_start; }
+    uint32_t get_id_range_end() const { return header_.id_range_end; }
+    void set_id_range(uint32_t start, uint32_t end) { header_.id_range_start = start; header_.id_range_end = end; }
+    // Getters/setters for free_id_bitmap
+    std::bitset<IDS_PER_PAGE>& free_id_bitmap() { return free_id_bitmap_; }
+    const std::bitset<IDS_PER_PAGE>& free_id_bitmap() const { return free_id_bitmap_; }
+
     std::vector<uint8_t> serialize();
     void deserialize(const std::vector<uint8_t>& data);
 
@@ -100,6 +116,8 @@ private:
     PageHeader header_;
     std::vector<Slot> slots_;
     std::vector<uint8_t> data_;
+    // New: Bitmap for free IDs in this page
+    std::bitset<IDS_PER_PAGE> free_id_bitmap_;
 
     void compact_page();
 };
@@ -115,11 +133,13 @@ struct TableMetadata {
     uint32_t first_data_page;
     uint32_t last_data_page;
     uint32_t record_count;
-    uint32_t next_record_id;
+    // Removed: uint32_t next_record_id;
     uint32_t free_space_head;
     // New: Schema
     uint32_t column_count;
     ColumnSchema columns[16]; // Max 16 columns per table for simplicity
+    // New: Next available id block for new pages
+    uint32_t next_id_block;
 };
 
 struct CatalogHeader {
@@ -265,6 +285,7 @@ private:
     void write_page_to_disk(Page& page);
     Page& get_or_load_page(uint32_t page_id);
     Page& get_or_create_page(uint32_t page_id);
+    Page& get_or_create_page(uint32_t page_id, uint32_t id_range_start);
 
     TableMetadata& get_table_metadata(const std::string& table_name);
     Page& get_last_page_for_table(const std::string& table_name);
