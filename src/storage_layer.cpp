@@ -65,6 +65,7 @@ bool Page::update_record(uint32_t record_id, const std::vector<uint8_t>& new_dat
         });
 
     if (slot_it == slots_.end()) {
+        // Defensive: record not found or not occupied
         return false;
     }
 
@@ -73,26 +74,27 @@ bool Page::update_record(uint32_t record_id, const std::vector<uint8_t>& new_dat
 
     if (space_needed <= slot_it->length) {
         std::memcpy(data_.data() + slot_it->offset, new_data.data(), new_data.size());
-        slot_it->length = new_data.size();
-
+        // Defensive: update length only if new_data is smaller
         if (space_needed < slot_it->length) {
             header_.free_space += (slot_it->length - space_needed);
+            slot_it->length = new_data.size();
         }
+        header_.flags |= PAGE_DIRTY;
+        return true;
     }
     else if (space_needed <= space_available) {
         compact_page();
-
         if (space_needed <= header_.free_space) {
             slot_it->offset = header_.free_space_offset;
             std::memcpy(data_.data() + slot_it->offset, new_data.data(), new_data.size());
             slot_it->length = new_data.size();
-
             header_.free_space -= new_data.size();
             header_.free_space_offset += new_data.size();
             header_.flags |= PAGE_DIRTY;
             return true;
         }
     }
+    // Defensive: not enough space
     return false;
 }
 
@@ -104,6 +106,7 @@ bool Page::delete_record(uint32_t record_id) {
             return true;
         }
     }
+    // Defensive: record not found or already deleted
     return false;
 }
 
@@ -121,6 +124,7 @@ void Page::compact_page() {
             slot.offset = current_offset;
             current_offset += slot.length;
         }
+        // Minimal patch: do NOT change offset for deleted slots
     }
 
     data_ = std::move(new_data);
@@ -131,43 +135,50 @@ void Page::compact_page() {
 
 std::vector<uint8_t> Page::serialize() {
     std::vector<uint8_t> buffer(PAGE_SIZE);
-
     compact_page();
-
     std::memcpy(buffer.data(), &header_, sizeof(PageHeader));
-
     uint32_t slots_offset = sizeof(PageHeader);
+    size_t slots_bytes = slots_.size() * sizeof(Slot);
+    if (slots_offset + slots_bytes > buffer.size()) throw std::runtime_error("Serialize error: slot data out of bounds");
     std::memcpy(
         buffer.data() + slots_offset,
         slots_.data(),
-        slots_.size() * sizeof(Slot)
+        slots_bytes
     );
-
+    // Correctly copy only the used portion of data_
+    size_t data_offset = sizeof(PageHeader) + slots_bytes;
+    size_t data_length = header_.free_space_offset - data_offset;
+    if (data_offset + data_length > buffer.size()) throw std::runtime_error("Serialize error: data out of bounds");
     std::memcpy(
-        buffer.data() + header_.free_space_offset,
+        buffer.data() + data_offset,
         data_.data(),
-        data_.size()
+        data_length
     );
-
-    // Serialize free_id_bitmap after data_
     size_t bitmap_offset = PAGE_SIZE - sizeof(free_id_bitmap_);
+    if (bitmap_offset + sizeof(free_id_bitmap_) > buffer.size()) throw std::runtime_error("Serialize error: free_id_bitmap out of bounds");
     std::memcpy(buffer.data() + bitmap_offset, &free_id_bitmap_, sizeof(free_id_bitmap_));
-
     return buffer;
 }
 
 void Page::deserialize(const std::vector<uint8_t>& data) {
+    if (data.size() < sizeof(PageHeader)) throw std::runtime_error("Corrupt page: too small");
     std::memcpy(&header_, data.data(), sizeof(PageHeader));
 
+    if (header_.slot_count > IDS_PER_PAGE) throw std::runtime_error("Corrupt page: too many slots");
     slots_.resize(header_.slot_count);
+
     uint32_t slots_offset = sizeof(PageHeader);
+    size_t slots_bytes = header_.slot_count * sizeof(Slot);
+    if (data.size() < slots_offset + slots_bytes) throw std::runtime_error("Corrupt page: slot data out of bounds");
     std::memcpy(
         slots_.data(),
         data.data() + slots_offset,
-        header_.slot_count * sizeof(Slot)
+        slots_bytes
     );
 
     data_.resize(PAGE_SIZE - sizeof(PageHeader));
+    if (header_.free_space_offset > data_.size()) throw std::runtime_error("Corrupt page: free_space_offset out of bounds");
+    if (data.size() < header_.free_space_offset + data_.size()) throw std::runtime_error("Corrupt page: data out of bounds");
     std::memcpy(
         data_.data(),
         data.data() + header_.free_space_offset,
@@ -176,10 +187,29 @@ void Page::deserialize(const std::vector<uint8_t>& data) {
 
     // Deserialize free_id_bitmap
     size_t bitmap_offset = PAGE_SIZE - sizeof(free_id_bitmap_);
+    if (data.size() < bitmap_offset + sizeof(free_id_bitmap_)) throw std::runtime_error("Corrupt page: free_id_bitmap out of bounds");
     std::memcpy(&free_id_bitmap_, data.data() + bitmap_offset, sizeof(free_id_bitmap_));
 }
 
 
+// --- Storage Layer Helper Functions ---
+static TableMetadata make_table_metadata(const std::string& table_name, const std::vector<ColumnSchema>& schema) {
+    TableMetadata new_table{};
+    std::memset(&new_table, 0, sizeof(TableMetadata));
+    size_t copy_len = std::min(table_name.size(), static_cast<size_t>(MAX_TABLE_NAME_LEN));
+    table_name.copy(new_table.name, copy_len);
+    new_table.name[copy_len] = '\0';
+    new_table.first_data_page = INVALID_PAGE_ID;
+    new_table.last_data_page = INVALID_PAGE_ID;
+    new_table.record_count = 0;
+    new_table.free_space_head = INVALID_PAGE_ID;
+    new_table.column_count = schema.size();
+    for (size_t i = 0; i < schema.size() && i < MAX_COLUMNS; ++i) {
+        new_table.columns[i] = schema[i];
+    }
+    new_table.next_id_block = 0;
+    return new_table;
+}
 
 CatalogPage::CatalogPage() {
     header_.table_count = 0;
@@ -198,13 +228,7 @@ bool CatalogPage::add_table(const std::string& table_name) {
         return false;
     }
 
-    TableMetadata new_table;
-    memset(&new_table, 0, sizeof(TableMetadata));
-
-    size_t copy_len = std::min(table_name.size(), static_cast<size_t>(MAX_TABLE_NAME_LEN));
-    table_name.copy(new_table.name, copy_len);
-    new_table.name[copy_len] = '\0';
-
+    TableMetadata new_table = make_table_metadata(table_name, {}); // Schema is not available here yet
     new_table.first_data_page = INVALID_PAGE_ID;
     new_table.last_data_page = INVALID_PAGE_ID;
     new_table.record_count = 0;
@@ -266,31 +290,30 @@ bool CatalogPage::remove_table(const std::string& table_name) {
 
 std::vector<uint8_t> CatalogPage::serialize() const {
     std::vector<uint8_t> buffer(PAGE_SIZE, 0);
-
+    if (sizeof(CatalogHeader) > buffer.size()) throw std::runtime_error("Catalog serialize: header out of bounds");
     memcpy(buffer.data(), &header_, sizeof(CatalogHeader));
-
     size_t offset = sizeof(CatalogHeader);
     for (const auto& table : tables_) {
+        if (offset + sizeof(TableMetadata) > buffer.size()) throw std::runtime_error("Catalog serialize: table out of bounds");
         memcpy(buffer.data() + offset, &table, sizeof(TableMetadata));
         offset += sizeof(TableMetadata);
     }
-
     CatalogHeader* serialized_header = reinterpret_cast<CatalogHeader*>(buffer.data());
     serialized_header->flags = CATALOG_CLEAN;
-
     return buffer;
 }
 
 void CatalogPage::deserialize(const std::vector<uint8_t>& data) {
+    if (data.size() < sizeof(CatalogHeader)) throw std::runtime_error("Corrupt catalog: too small");
     memcpy(&header_, data.data(), sizeof(CatalogHeader));
-
+    if (header_.table_count > MAX_TABLES) throw std::runtime_error("Corrupt catalog: too many tables");
     tables_.resize(header_.table_count);
     size_t offset = sizeof(CatalogHeader);
     for (size_t i = 0; i < header_.table_count; i++) {
+        if (offset + sizeof(TableMetadata) > data.size()) throw std::runtime_error("Corrupt catalog: table out of bounds");
         memcpy(&tables_[i], data.data() + offset, sizeof(TableMetadata));
         offset += sizeof(TableMetadata);
     }
-
     catalog_dirty_ = false;
 }
 
@@ -344,15 +367,15 @@ static std::vector<uint8_t> serialize_row(const std::vector<ColumnSchema>& schem
         const auto& val = values[i];
         if (col.type == ColumnType::INT) {
             int32_t intval = std::stoi(val);
-            uint8_t buf[4];
-            std::memcpy(buf, &intval, 4);
-            data.insert(data.end(), buf, buf + 4);
-            offset += 4;
+            uint8_t buf[INT_SIZE];
+            std::memcpy(buf, &intval, INT_SIZE);
+            data.insert(data.end(), buf, buf + INT_SIZE);
+            offset += INT_SIZE;
         } else if (col.type == ColumnType::TEXT) {
             uint32_t len = val.size();
-            data.insert(data.end(), reinterpret_cast<uint8_t*>(&len), reinterpret_cast<uint8_t*>(&len) + 4);
+            data.insert(data.end(), reinterpret_cast<uint8_t*>(&len), reinterpret_cast<uint8_t*>(&len) + INT_SIZE);
             data.insert(data.end(), val.begin(), val.end());
-            offset += 4 + len;
+            offset += INT_SIZE + len;
         }
     }
     // Write header at the start
@@ -371,12 +394,12 @@ static std::vector<std::string> deserialize_row(const std::vector<ColumnSchema>&
         size_t field_offset = header.offsets[i];
         if (col.type == ColumnType::INT) {
             int32_t intval;
-            std::memcpy(&intval, data.data() + field_offset, 4);
+            std::memcpy(&intval, data.data() + field_offset, INT_SIZE);
             values.push_back(std::to_string(intval));
         } else if (col.type == ColumnType::TEXT) {
             uint32_t len;
-            std::memcpy(&len, data.data() + field_offset, 4);
-            std::string str(reinterpret_cast<const char*>(data.data() + field_offset + 4), len);
+            std::memcpy(&len, data.data() + field_offset, INT_SIZE);
+            std::string str(reinterpret_cast<const char*>(data.data() + field_offset + INT_SIZE), len);
             values.push_back(str);
         }
     }
@@ -387,27 +410,14 @@ void FileStorageLayer::create(const std::string& table, const std::vector<Column
     if (catalog_.get_table(table).has_value()) {
         throw std::runtime_error("Table already exists");
     }
-    TableMetadata new_table{};
-    std::memset(&new_table, 0, sizeof(TableMetadata));
-    size_t copy_len = std::min(table.size(), static_cast<size_t>(MAX_TABLE_NAME_LEN));
-    table.copy(new_table.name, copy_len);
-    new_table.name[copy_len] = '\0';
-    new_table.first_data_page = INVALID_PAGE_ID;
-    new_table.last_data_page = INVALID_PAGE_ID;
-    new_table.record_count = 0;
-    new_table.free_space_head = INVALID_PAGE_ID;
-    new_table.column_count = schema.size();
-    for (size_t i = 0; i < schema.size() && i < 16; ++i) {
-        new_table.columns[i] = schema[i];
-    }
-    new_table.next_id_block = 0; // Start from 0, but first page will use id_range_start = 1
+    TableMetadata new_table = make_table_metadata(table, schema);
     catalog_.add_table(table);
     catalog_.update_table(new_table);
     table_cache_[table] = new_table;
     catalog_.set_dirty();
 }
 
-int FileStorageLayer::insert(const std::string& table, const std::vector<std::string>& values) {
+uint32_t FileStorageLayer::insert(const std::string& table, const std::vector<std::string>& values) {
     if (!is_open) throw std::runtime_error("Storage not open");
     TableMetadata& metadata = get_table_metadata(table);
     if (values.size() != metadata.column_count) throw std::runtime_error("Column count mismatch");
@@ -455,7 +465,7 @@ int FileStorageLayer::insert(const std::string& table, const std::vector<std::st
     return record_id;
 }
 
-std::vector<std::string> FileStorageLayer::get(const std::string& table, int record_id) {
+std::vector<std::string> FileStorageLayer::get(const std::string& table, uint32_t record_id) {
     if (!is_open) throw std::runtime_error("Storage not open");
     const TableMetadata& metadata = get_table_metadata(table);
     std::vector<ColumnSchema> schema(metadata.columns, metadata.columns + metadata.column_count);
@@ -471,7 +481,7 @@ std::vector<std::string> FileStorageLayer::get(const std::string& table, int rec
     throw std::runtime_error("Record not found");
 }
 
-void FileStorageLayer::update(const std::string& table, int record_id, const std::vector<std::string>& values) {
+void FileStorageLayer::update(const std::string& table, uint32_t record_id, const std::vector<std::string>& values) {
     if (!is_open) throw std::runtime_error("Storage not open");
     TableMetadata& metadata = get_table_metadata(table);
     if (values.size() != metadata.column_count) throw std::runtime_error("Column count mismatch");
@@ -488,7 +498,7 @@ void FileStorageLayer::update(const std::string& table, int record_id, const std
     throw std::runtime_error("Record not found for update");
 }
 
-void FileStorageLayer::delete_record(const std::string& table, int record_id) {
+void FileStorageLayer::delete_record(const std::string& table, uint32_t record_id) {
     if (!is_open) throw std::runtime_error("Storage not open");
     TableMetadata& metadata = get_table_metadata(table);
     uint32_t current_page_id = metadata.first_data_page;
@@ -497,10 +507,16 @@ void FileStorageLayer::delete_record(const std::string& table, int record_id) {
         if (record_id >= page.get_id_range_start() && record_id < page.get_id_range_end()) {
             uint32_t idx = record_id - page.get_id_range_start();
             if (page.delete_record(record_id)) {
-                page.free_id_bitmap().reset(idx);
-                metadata.record_count--;
+                if (idx < IDS_PER_PAGE) {
+                    page.free_id_bitmap().reset(idx);
+                }
+                if (metadata.record_count > 0) {
+                    metadata.record_count--;
+                }
                 catalog_.update_table(metadata);
                 return;
+            } else {
+                throw std::runtime_error("Delete failed: record not found or already deleted");
             }
         }
         current_page_id = page.get_next_page_id();
@@ -525,7 +541,7 @@ void FileStorageLayer::flush() {
 }
 
 std::string FileStorageLayer::get_page_path(uint32_t page_id) const {
-    return storage_path + "/page_" + std::to_string(page_id) + ".dat";
+    return storage_path + "/" + PAGE_FILE_PREFIX + std::to_string(page_id) + PAGE_FILE_EXTENSION;
 }
 
 uint32_t FileStorageLayer::allocate_new_page() {

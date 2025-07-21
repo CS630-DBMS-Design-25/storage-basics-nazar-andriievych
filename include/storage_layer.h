@@ -17,6 +17,12 @@ constexpr uint32_t MAX_PAGE_ID = UINT32_MAX - 1;
 constexpr uint32_t CATALOG_PAGE_ID = 0;
 constexpr uint32_t MAX_TABLE_NAME_LEN = 63;
 constexpr uint32_t IDS_PER_PAGE = 1024;
+constexpr uint32_t INT_SIZE = 4;
+constexpr uint32_t MAX_COLUMNS = 16;
+constexpr char PAGE_FILE_PREFIX[] = "page_";
+constexpr char PAGE_FILE_EXTENSION[] = ".dat";
+constexpr uint32_t FIRST_ID_BLOCK = 1;
+constexpr char VALUE_DELIMITER = ',';
 
 // New: Supported column types
 enum class ColumnType : uint8_t {
@@ -208,7 +214,7 @@ public:
      * @param table Table name
      * @param values Vector of string values (must match schema)
      */
-    virtual int insert(const std::string& table, const std::vector<std::string>& values) = 0;
+    virtual uint32_t insert(const std::string& table, const std::vector<std::string>& values) = 0;
 
     /**
      * Retrieve a record by its unique ID from the specified table.
@@ -216,7 +222,7 @@ public:
      * @param record_id Record ID
      * @return Vector of string values (decoded)
      */
-    virtual std::vector<std::string> get(const std::string& table, int record_id) = 0;
+    virtual std::vector<std::string> get(const std::string& table, uint32_t record_id) = 0;
 
     /**
      * Update an existing record identified by record ID.
@@ -224,12 +230,12 @@ public:
      * @param record_id Record ID
      * @param values Vector of string values (must match schema)
      */
-    virtual void update(const std::string& table, int record_id, const std::vector<std::string>& values) = 0;
+    virtual void update(const std::string& table, uint32_t record_id, const std::vector<std::string>& values) = 0;
 
     /**
      * Delete a record identified by its unique ID.
      */
-    virtual void delete_record(const std::string& table, int record_id) = 0;
+    virtual void delete_record(const std::string& table, uint32_t record_id) = 0;
 
     /**
      * Scan records in a table optionally using projection and filter. Callback is optional.
@@ -260,8 +266,9 @@ public:
     void open(const std::string& path) override;
     void close() override;
     void create(const std::string& table, const std::vector<ColumnSchema>& schema) override;
-    int insert(const std::string& table, const std::vector<std::string>& values) override;
-    std::vector<std::string> get(const std::string& table, int record_id) override;
+    uint32_t  insert(const std::string& table, const std::vector<std::string>& values) override;
+    std::vector<std::string> get(const std::string& table, uint32_t  record_id) override;
+    void update(const std::string& table, uint32_t  record_id, const std::vector<std::string>& values) override;
     std::vector<std::vector<std::string>> scan(
         const std::string& table,
         const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& callback = std::nullopt,
@@ -269,8 +276,7 @@ public:
         const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt) override;
     void flush() override;
 
-    void update(const std::string& table, int record_id, const std::vector<std::string>& values) override;
-    void delete_record(const std::string& table, int record_id) override;
+    void delete_record(const std::string& table, uint32_t record_id) override;
 
 private:
     bool is_open;
