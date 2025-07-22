@@ -65,7 +65,6 @@ bool Page::update_record(uint32_t record_id, const std::vector<uint8_t>& new_dat
         });
 
     if (slot_it == slots_.end()) {
-        // Defensive: record not found or not occupied
         return false;
     }
 
@@ -74,7 +73,6 @@ bool Page::update_record(uint32_t record_id, const std::vector<uint8_t>& new_dat
 
     if (space_needed <= slot_it->length) {
         std::memcpy(data_.data() + slot_it->offset, new_data.data(), new_data.size());
-        // Defensive: update length only if new_data is smaller
         if (space_needed < slot_it->length) {
             header_.free_space += (slot_it->length - space_needed);
             slot_it->length = new_data.size();
@@ -94,7 +92,6 @@ bool Page::update_record(uint32_t record_id, const std::vector<uint8_t>& new_dat
             return true;
         }
     }
-    // Defensive: not enough space
     return false;
 }
 
@@ -106,7 +103,6 @@ bool Page::delete_record(uint32_t record_id) {
             return true;
         }
     }
-    // Defensive: record not found or already deleted
     return false;
 }
 
@@ -124,7 +120,6 @@ void Page::compact_page() {
             slot.offset = current_offset;
             current_offset += slot.length;
         }
-        // Minimal patch: do NOT change offset for deleted slots
     }
 
     data_ = std::move(new_data);
@@ -145,7 +140,6 @@ std::vector<uint8_t> Page::serialize() {
         slots_.data(),
         slots_bytes
     );
-    // Correctly copy only the used portion of data_
     size_t data_offset = sizeof(PageHeader) + slots_bytes;
     size_t data_length = header_.free_space_offset - data_offset;
     if (data_offset + data_length > buffer.size()) throw std::runtime_error("Serialize error: data out of bounds");
@@ -185,14 +179,11 @@ void Page::deserialize(const std::vector<uint8_t>& data) {
         data_.size()
     );
 
-    // Deserialize free_id_bitmap
     size_t bitmap_offset = PAGE_SIZE - sizeof(free_id_bitmap_);
     if (data.size() < bitmap_offset + sizeof(free_id_bitmap_)) throw std::runtime_error("Corrupt page: free_id_bitmap out of bounds");
     std::memcpy(&free_id_bitmap_, data.data() + bitmap_offset, sizeof(free_id_bitmap_));
 }
 
-
-// --- Storage Layer Helper Functions ---
 static TableMetadata make_table_metadata(const std::string& table_name, const std::vector<ColumnSchema>& schema) {
     TableMetadata new_table{};
     std::memset(&new_table, 0, sizeof(TableMetadata));
@@ -228,7 +219,7 @@ bool CatalogPage::add_table(const std::string& table_name) {
         return false;
     }
 
-    TableMetadata new_table = make_table_metadata(table_name, {}); // Schema is not available here yet
+    TableMetadata new_table = make_table_metadata(table_name, {});
     new_table.first_data_page = INVALID_PAGE_ID;
     new_table.last_data_page = INVALID_PAGE_ID;
     new_table.record_count = 0;
@@ -353,13 +344,11 @@ void FileStorageLayer::close() {
     is_open = false;
 }
 
-// Helper: Serialize a row according to schema, with TupleHeader
 static std::vector<uint8_t> serialize_row(const std::vector<ColumnSchema>& schema, const std::vector<std::string>& values) {
     TupleHeader header{};
     header.field_count = schema.size();
     std::vector<uint8_t> data;
     size_t offset = sizeof(TupleHeader);
-    // Reserve space for header
     data.resize(sizeof(TupleHeader), 0);
     for (size_t i = 0; i < schema.size(); ++i) {
         header.offsets[i] = offset;
@@ -378,12 +367,10 @@ static std::vector<uint8_t> serialize_row(const std::vector<ColumnSchema>& schem
             offset += INT_SIZE + len;
         }
     }
-    // Write header at the start
     std::memcpy(data.data(), &header, sizeof(TupleHeader));
     return data;
 }
 
-// Helper: Deserialize a row using TupleHeader and schema
 static std::vector<std::string> deserialize_row(const std::vector<ColumnSchema>& schema, const std::vector<uint8_t>& data) {
     std::vector<std::string> values;
     if (data.size() < sizeof(TupleHeader)) return values;
@@ -423,7 +410,6 @@ uint32_t FileStorageLayer::insert(const std::string& table, const std::vector<st
     if (values.size() != metadata.column_count) throw std::runtime_error("Column count mismatch");
     std::vector<ColumnSchema> schema(metadata.columns, metadata.columns + metadata.column_count);
     std::vector<uint8_t> record = serialize_row(schema, values);
-    // Try to find a page with a free ID
     uint32_t current_page_id = metadata.first_data_page;
     while (current_page_id != INVALID_PAGE_ID) {
         Page& page = get_or_load_page(current_page_id);
@@ -440,7 +426,6 @@ uint32_t FileStorageLayer::insert(const std::string& table, const std::vector<st
         }
         current_page_id = page.get_next_page_id();
     }
-    // No free ID found, allocate new page and ID block
     uint32_t new_page_id = allocate_new_page();
     uint32_t id_range_start = (metadata.next_id_block == 0) ? 1 : (metadata.next_id_block * IDS_PER_PAGE + 1);
     Page& new_page = get_or_create_page(new_page_id, id_range_start);
@@ -669,11 +654,9 @@ std::vector<std::vector<std::string>> FileStorageLayer::scan(
                 auto record_data = page.get_record(slot.record_id);
                 if (record_data.has_value()) {
                     auto row = deserialize_row(schema, record_data.value());
-                    // Apply filter (WHERE)
                     if (filter_func && !(*filter_func)(row)) {
                         continue;
                     }
-                    // Apply projection
                     if (projection) {
                         std::vector<std::string> projected_row;
                         for (int idx : *projection) {
@@ -690,12 +673,10 @@ std::vector<std::vector<std::string>> FileStorageLayer::scan(
         }
         current_page_id = page.get_next_page_id();
     }
-    // Apply ORDER BY
     if (order_by && !order_by->empty()) {
         std::sort(results.begin(), results.end(), [&](const std::vector<std::string>& a, const std::vector<std::string>& b) {
             for (const auto& [col, asc] : *order_by) {
                 if (col < 0 || static_cast<size_t>(col) >= a.size() || static_cast<size_t>(col) >= b.size()) continue;
-                // Try to compare as int if possible
                 try {
                     int ai = std::stoi(a[col]);
                     int bi = std::stoi(b[col]);
@@ -707,11 +688,9 @@ std::vector<std::vector<std::string>> FileStorageLayer::scan(
             return false;
         });
     }
-    // Apply LIMIT
     if (limit && results.size() > *limit) {
         results.resize(*limit);
     }
-    // Apply AGGREGATE (only SUM and ABS for INT columns supported)
     if (aggregate) {
         const std::string& op = aggregate->first;
         int col = aggregate->second;

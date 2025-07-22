@@ -40,7 +40,6 @@ constexpr char HELP_MESSAGE[] =
     "  help                         - Display this help message\n"
     "  exit/quit                    - Exit the program\n";
 
-// --- ANSI Color Macros ---
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BOLD    "\033[1m"
 #define COLOR_UNDER   "\033[4m"
@@ -51,7 +50,6 @@ constexpr char HELP_MESSAGE[] =
 #define COLOR_CYAN    "\033[36m"
 #define COLOR_WHITE   "\033[37m"
 
-// --- Pretty Print Helpers ---
 void print_success(const std::string& msg) {
     std::cout << COLOR_GREEN << msg << COLOR_RESET << std::endl;
 }
@@ -80,37 +78,30 @@ void print_table_row(const std::vector<std::string>& values) {
     std::cout << std::endl;
 }
 
-// Convert a string to a vector of bytes
 std::vector<uint8_t> string_to_bytes(const std::string& str) {
     return std::vector<uint8_t>(str.begin(), str.end());
 }
 
-// Convert a vector of bytes to a string
 std::string bytes_to_string(const std::vector<uint8_t>& bytes) {
     return std::string(bytes.begin(), bytes.end());
 }
 
-// Parse command line arguments
 std::vector<std::string> parse_args(const std::string& input) {
     std::vector<std::string> args;
     std::istringstream iss(input);
     std::string arg;
-
     while (iss >> arg) {
         args.push_back(arg);
     }
-
     return args;
 }
 
-// Helper: Parse column type from string
 ColumnType parse_column_type(const std::string& s) {
     if (s == TYPE_INT) return ColumnType::INT;
     if (s == TYPE_TEXT) return ColumnType::TEXT;
     throw std::runtime_error("Unknown column type: " + s);
 }
 
-// Helper: Parse values from comma-separated string
 std::vector<std::string> parse_values(const std::string& s) {
     std::vector<std::string> vals;
     std::stringstream ss(s);
@@ -121,7 +112,6 @@ std::vector<std::string> parse_values(const std::string& s) {
     return vals;
 }
 
-// --- CLI Helper Functions ---
 bool check_args(const std::vector<std::string>& args, size_t min_args, const char* usage_msg) {
     if (args.size() < min_args) {
         std::cout << usage_msg << std::endl;
@@ -240,7 +230,6 @@ int main() {
                 std::optional<size_t> limit;
                 std::optional<std::pair<std::string, int>> aggregate;
                 std::vector<std::string> col_names = storage.get_column_names(table);
-                // Parse options
                 for (size_t i = 2; i < args.size(); ++i) {
                     if (args[i] == "--projection" && i + 1 < args.size()) {
                         std::vector<int> proj;
@@ -255,7 +244,6 @@ int main() {
                         --i;
                         if (!proj.empty()) projection = proj;
                     } else if (args[i] == "--where" && i + 1 < args.size()) {
-                        // Only supports equality and AND for now, e.g. --where col=val [col2=val2 ...]
                         std::vector<std::pair<int, std::string>> filters;
                         ++i;
                         while (i < args.size() && args[i].rfind("--", 0) != 0) {
@@ -314,7 +302,6 @@ int main() {
                     }
                 }
                 auto rows = storage.scan(table, projection, filter_func, order_by, limit, aggregate);
-                // Print header if not aggregate SUM
                 bool is_sum = aggregate && aggregate->first == "SUM";
                 if (!rows.empty() && !is_sum) {
                     std::vector<std::string> headers;

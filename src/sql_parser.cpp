@@ -2,20 +2,17 @@
 #include <stdexcept>
 #include <iostream>
 
-// Helper: expect a token of a certain type and value
 static void expect(const std::vector<Token>& tokens, size_t& i, TokenType type, const std::string& value = "") {
     if (i >= tokens.size() || tokens[i].type != type || (!value.empty() && tokens[i].text != value))
         throw std::runtime_error("Unexpected token: " + (i < tokens.size() ? tokens[i].text : "<end>"));
 }
 
-// Parse a SELECT statement (very basic, extend as needed)
 std::unique_ptr<SqlAst> SqlParser::parse(const std::vector<Token>& tokens) {
     size_t i = 0;
     expect(tokens, i, TokenType::Keyword, "SELECT");
     ++i;
     auto ast = std::make_unique<SqlAst>();
     ast->type = SqlAstType::Select;
-    // Parse projection
     while (i < tokens.size() && tokens[i].type != TokenType::Keyword) {
         if (tokens[i].type == TokenType::Identifier) {
             ast->select_columns.push_back(tokens[i].text);
@@ -23,12 +20,10 @@ std::unique_ptr<SqlAst> SqlParser::parse(const std::vector<Token>& tokens) {
         ++i;
         if (i < tokens.size() && tokens[i].text == ",") ++i;
     }
-    // FROM
     expect(tokens, i, TokenType::Keyword, "FROM");
     ++i;
     if (tokens[i].type != TokenType::Identifier) throw std::runtime_error("Expected table name");
     ast->from_table = tokens[i++].text;
-    // Optional JOIN
     if (i < tokens.size() && tokens[i].type == TokenType::Keyword && tokens[i].text == "JOIN") {
         ++i;
         if (tokens[i].type != TokenType::Identifier) throw std::runtime_error("Expected join table name");
@@ -42,7 +37,6 @@ std::unique_ptr<SqlAst> SqlParser::parse(const std::vector<Token>& tokens) {
         if (tokens[i].type != TokenType::Identifier) throw std::runtime_error("Expected join column");
         ast->join_right_col = tokens[i++].text;
     }
-    // Optional WHERE
     if (i < tokens.size() && tokens[i].type == TokenType::Keyword && tokens[i].text == "WHERE") {
         ++i;
         while (i < tokens.size() && tokens[i].type == TokenType::Identifier) {
@@ -54,7 +48,6 @@ std::unique_ptr<SqlAst> SqlParser::parse(const std::vector<Token>& tokens) {
             if (i < tokens.size() && tokens[i].text == "AND") ++i;
         }
     }
-    // Optional ORDER BY
     if (i < tokens.size() && tokens[i].type == TokenType::Keyword && tokens[i].text == "ORDER") {
         ++i;
         expect(tokens, i, TokenType::Keyword, "BY");
@@ -70,12 +63,10 @@ std::unique_ptr<SqlAst> SqlParser::parse(const std::vector<Token>& tokens) {
             if (i < tokens.size() && tokens[i].text == ",") ++i;
         }
     }
-    // Optional LIMIT
     if (i < tokens.size() && tokens[i].type == TokenType::Keyword && tokens[i].text == "LIMIT") {
         ++i;
         ast->limit = std::stoi(tokens[i++].text);
     }
-    // Optional aggregate (SUM, ABS)
     for (auto& col : ast->select_columns) {
         if (col.find("SUM(") == 0) ast->aggregate = {"SUM", col.substr(4, col.size() - 5)};
         if (col.find("ABS(") == 0) ast->aggregate = {"ABS", col.substr(4, col.size() - 5)};

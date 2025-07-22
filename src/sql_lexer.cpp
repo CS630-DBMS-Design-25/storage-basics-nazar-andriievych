@@ -4,7 +4,6 @@
 #include <stdexcept>
 #include <unordered_set>
 
-// Define SQL keywords
 static const std::unordered_set<std::string> keywords = {
     "SELECT", "FROM", "WHERE", "ORDER", "BY", "LIMIT", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "JOIN", "ON", "AS", "AND", "OR", "SUM", "ABS"
 };

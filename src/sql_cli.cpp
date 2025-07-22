@@ -25,7 +25,6 @@ void print_sql_help() {
     std::cout << std::endl;
 }
 
-// Helper: trim and uppercase
 std::string trim(const std::string& s) {
     size_t start = s.find_first_not_of(" \t\n\r");
     size_t end = s.find_last_not_of(" \t\n\r");
@@ -58,7 +57,6 @@ int main() {
         std::string uline = to_upper(trim(line));
         if (uline == "AST ON") { print_ast = true; std::cout << "AST printing enabled.\n"; continue; }
         if (uline == "AST OFF") { print_ast = false; std::cout << "AST printing disabled.\n"; continue; }
-        // CREATE TABLE
         if (uline.find("CREATE TABLE") == 0) {
             size_t name_start = uline.find("TABLE") + 5;
             size_t paren_start = line.find('(');
@@ -102,7 +100,6 @@ int main() {
             }
             continue;
         }
-        // INSERT INTO
         if (uline.find("INSERT INTO") == 0) {
             size_t name_start = uline.find("INTO") + 4;
             size_t values_pos = uline.find("VALUES");
@@ -116,7 +113,6 @@ int main() {
             std::stringstream ss(vals);
             std::string val;
             while (std::getline(ss, val, ',')) values.push_back(trim(val));
-            // Check table exists and value count matches
             try {
                 auto col_names = storage.get_column_names(table);
                 if (col_names.size() != values.size()) {
@@ -136,12 +132,10 @@ int main() {
             }
             continue;
         }
-        // DELETE FROM
         if (uline.find("DELETE FROM") == 0) {
             size_t name_start = uline.find("FROM") + 4;
             size_t where_pos = uline.find("WHERE");
             std::string table = trim(line.substr(name_start, (where_pos == std::string::npos ? std::string::npos : where_pos - name_start)));
-            // Check table exists
             std::vector<std::string> col_names;
             try {
                 col_names = storage.get_column_names(table);
@@ -150,13 +144,12 @@ int main() {
                 continue;
             }
             std::vector<int> to_delete;
-            // If WHERE present, scan and delete matching
             if (where_pos != std::string::npos) {
                 std::string conds = line.substr(where_pos + 5);
                 std::vector<std::pair<int, std::string>> filters;
                 std::stringstream ss(conds);
                 std::string cond;
-                while (std::getline(ss, cond, 'A')) { // crude split on AND
+                while (std::getline(ss, cond, 'A')) {
                     size_t eq = cond.find('=');
                     if (eq == std::string::npos) continue;
                     std::string col = trim(cond.substr(0, eq));
@@ -170,10 +163,9 @@ int main() {
                     for (const auto& [idx, val] : filters) {
                         if (idx < 0 || static_cast<size_t>(idx) >= rows[i].size() || rows[i][idx] != val) { match = false; break; }
                     }
-                    if (match) to_delete.push_back(i + 1); // record_id is 1-based
+                    if (match) to_delete.push_back(i + 1);
                 }
             } else {
-                // No WHERE: delete all
                 auto rows = storage.scan(table);
                 for (size_t i = 0; i < rows.size(); ++i) to_delete.push_back(i + 1);
             }
@@ -185,14 +177,11 @@ int main() {
             storage.flush();
             continue;
         }
-        // Otherwise, try SELECT or other supported SQL
         try {
             auto tokens = lexer.tokenize(line);
             auto ast = parser.parse(tokens);
-            // SELECT * support: expand * to all columns
             if (!ast->select_columns.empty() && ast->select_columns[0] == "*") {
                 if (!ast->join_table.empty()) {
-                    // Check both tables exist
                     std::vector<std::string> left_cols, right_cols;
                     try { left_cols = storage.get_column_names(ast->from_table); } catch (...) {
                         std::cout << "SELECT failed: table '" << ast->from_table << "' does not exist." << std::endl; continue; }
@@ -208,7 +197,6 @@ int main() {
                     ast->select_columns = cols;
                 }
             } else {
-                // Check all columns exist in the table(s)
                 std::vector<std::string> all_cols;
                 try { all_cols = storage.get_column_names(ast->from_table); } catch (...) {
                     std::cout << "SELECT failed: table '" << ast->from_table << "' does not exist." << std::endl; continue; }
