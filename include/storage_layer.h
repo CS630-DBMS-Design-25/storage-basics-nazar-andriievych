@@ -238,15 +238,22 @@ public:
     virtual void delete_record(const std::string& table, uint32_t record_id) = 0;
 
     /**
-     * Scan records in a table optionally using projection and filter. Callback is optional.
+     * Scan records in a table with support for projection, filter, order by, limit, and aggregation.
      * @param table Table name
+     * @param projection Optional vector of column indices to return
+     * @param filter_func Optional filter function (WHERE)
+     * @param order_by Optional vector of pairs (column index, ascending)
+     * @param limit Optional maximum number of rows to return
+     * @param aggregate Optional pair (operation, column index), e.g., ("SUM", 0)
      * @return Vector of rows, each row is a vector of string values (decoded)
      */
     virtual std::vector<std::vector<std::string>> scan(
         const std::string& table,
-        const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& callback = std::nullopt,
         const std::optional<std::vector<int>>& projection = std::nullopt,
-        const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt) = 0;
+        const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt,
+        const std::optional<std::vector<std::pair<int, bool>>>& order_by = std::nullopt,
+        const std::optional<size_t>& limit = std::nullopt,
+        const std::optional<std::pair<std::string, int>>& aggregate = std::nullopt) = 0;
 
     /**
      * Persist all buffered data immediately to disk.
@@ -272,9 +279,11 @@ public:
     void update(const std::string& table, uint32_t  record_id, const std::vector<std::string>& values) override;
     std::vector<std::vector<std::string>> scan(
         const std::string& table,
-        const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& callback = std::nullopt,
         const std::optional<std::vector<int>>& projection = std::nullopt,
-        const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt) override;
+        const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func = std::nullopt,
+        const std::optional<std::vector<std::pair<int, bool>>>& order_by = std::nullopt,
+        const std::optional<size_t>& limit = std::nullopt,
+        const std::optional<std::pair<std::string, int>>& aggregate = std::nullopt) override;
     void flush() override;
     std::vector<std::string> get_column_names(const std::string& table) override;
 

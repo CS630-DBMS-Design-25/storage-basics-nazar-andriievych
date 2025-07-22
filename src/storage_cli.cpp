@@ -24,11 +24,18 @@ constexpr char HELP_MESSAGE[] =
     "Storage Layer CLI - Available commands:\n"
     "  open <path>                  - Open storage at specified path\n"
     "  close                        - Close the storage\n"
-    "  insert <table> <record>      - Insert a record\n"
-    "  get <table> <record_id>      - Get a record by ID\n"
-    "  update <table> <record_id> <record> - Update a record\n"
-    "  delete <table> <record_id>   - Delete a record\n"
-    "  scan <table> [--projection <field1> <field2> ...] - Scan records in a table\n"
+    "  create <table> <col1>:<type1> ... - Create a table with schema\n"
+    "  insert <table> <val1,val2,...>    - Insert a record\n"
+    "  get <table> <record_id>            - Get a record by ID\n"
+    "  update <table> <record_id> <val1,val2,...> - Update a record\n"
+    "  delete <table> <record_id>         - Delete a record\n"
+    "  scan <table> [options]             - Scan records in a table\n"
+    "    Options:\n"
+    "      --projection <field1> <field2> ...   - Select columns to return\n"
+    "      --where <col>=<val>                  - Filter rows (exact match, repeatable)\n"
+    "      --orderby <col>[:asc|desc] ...       - Order by columns (default asc)\n"
+    "      --limit <N>                          - Limit number of rows\n"
+    "      --aggregate <SUM|ABS>:<col>          - Aggregate (SUM or ABS) on INT column\n"
     "  flush                        - Flush data to disk\n"
     "  help                         - Display this help message\n"
     "  exit/quit                    - Exit the program\n";
@@ -224,15 +231,107 @@ int main() {
                 print_success("Record deleted");
             });
         } else if (command == CMD_SCAN) {
-            if (!check_args(args, 2, "Error: Missing table argument. Usage: scan <table> [--projection <field1> <field2> ...]")) continue;
+            if (!check_args(args, 2, "Error: Missing table argument. Usage: scan <table> [options]")) continue;
             run_command([&] {
-                auto rows = storage.scan(args[1]);
-                if (!rows.empty()) {
-                    auto headers = storage.get_column_names(args[1]);
+                std::string table = args[1];
+                std::optional<std::vector<int>> projection;
+                std::optional<std::function<bool(const std::vector<std::string>&)>> filter_func;
+                std::optional<std::vector<std::pair<int, bool>>> order_by;
+                std::optional<size_t> limit;
+                std::optional<std::pair<std::string, int>> aggregate;
+                std::vector<std::string> col_names = storage.get_column_names(table);
+                // Parse options
+                for (size_t i = 2; i < args.size(); ++i) {
+                    if (args[i] == "--projection" && i + 1 < args.size()) {
+                        std::vector<int> proj;
+                        ++i;
+                        while (i < args.size() && args[i].rfind("--", 0) != 0) {
+                            auto it = std::find(col_names.begin(), col_names.end(), args[i]);
+                            if (it != col_names.end()) {
+                                proj.push_back(static_cast<int>(std::distance(col_names.begin(), it)));
+                            }
+                            ++i;
+                        }
+                        --i;
+                        if (!proj.empty()) projection = proj;
+                    } else if (args[i] == "--where" && i + 1 < args.size()) {
+                        // Only supports equality and AND for now, e.g. --where col=val [col2=val2 ...]
+                        std::vector<std::pair<int, std::string>> filters;
+                        ++i;
+                        while (i < args.size() && args[i].rfind("--", 0) != 0) {
+                            auto eq = args[i].find('=');
+                            if (eq != std::string::npos) {
+                                std::string col = args[i].substr(0, eq);
+                                std::string val = args[i].substr(eq + 1);
+                                auto it = std::find(col_names.begin(), col_names.end(), col);
+                                if (it != col_names.end()) {
+                                    filters.emplace_back(static_cast<int>(std::distance(col_names.begin(), it)), val);
+                                }
+                            }
+                            ++i;
+                        }
+                        --i;
+                        if (!filters.empty()) {
+                            filter_func = [filters](const std::vector<std::string>& row) {
+                                for (const auto& [idx, val] : filters) {
+                                    if (idx < 0 || static_cast<size_t>(idx) >= row.size() || row[idx] != val) return false;
+                                }
+                                return true;
+                            };
+                        }
+                    } else if (args[i] == "--orderby" && i + 1 < args.size()) {
+                        std::vector<std::pair<int, bool>> order;
+                        ++i;
+                        while (i < args.size() && args[i].rfind("--", 0) != 0) {
+                            std::string col = args[i];
+                            bool asc = true;
+                            auto pos = col.find(":");
+                            if (pos != std::string::npos) {
+                                asc = (col.substr(pos + 1) != "desc");
+                                col = col.substr(0, pos);
+                            }
+                            auto it = std::find(col_names.begin(), col_names.end(), col);
+                            if (it != col_names.end()) {
+                                order.emplace_back(static_cast<int>(std::distance(col_names.begin(), it)), asc);
+                            }
+                            ++i;
+                        }
+                        --i;
+                        if (!order.empty()) order_by = order;
+                    } else if (args[i] == "--limit" && i + 1 < args.size()) {
+                        limit = static_cast<size_t>(std::stoul(args[++i]));
+                    } else if (args[i] == "--aggregate" && i + 1 < args.size()) {
+                        std::string agg = args[++i];
+                        auto pos = agg.find(":");
+                        if (pos != std::string::npos) {
+                            std::string op = agg.substr(0, pos);
+                            std::string col = agg.substr(pos + 1);
+                            auto it = std::find(col_names.begin(), col_names.end(), col);
+                            if (it != col_names.end()) {
+                                aggregate = std::make_pair(op, static_cast<int>(std::distance(col_names.begin(), it)));
+                            }
+                        }
+                    }
+                }
+                auto rows = storage.scan(table, projection, filter_func, order_by, limit, aggregate);
+                // Print header if not aggregate SUM
+                bool is_sum = aggregate && aggregate->first == "SUM";
+                if (!rows.empty() && !is_sum) {
+                    std::vector<std::string> headers;
+                    if (projection) {
+                        for (int idx : *projection) {
+                            if (idx >= 0 && static_cast<size_t>(idx) < col_names.size()) headers.push_back(col_names[idx]);
+                        }
+                    } else {
+                        headers = col_names;
+                    }
                     print_table_header(headers);
                 }
                 for (const auto& values : rows) {
                     print_table_row(values);
+                }
+                if (is_sum && !rows.empty()) {
+                    std::cout << COLOR_BOLD << "SUM: " << rows[0][0] << COLOR_RESET << std::endl;
                 }
             });
         } else if (command == CMD_FLUSH) {

@@ -649,9 +649,11 @@ Page& FileStorageLayer::find_free_page_for_table(const std::string& table_name, 
 
 std::vector<std::vector<std::string>> FileStorageLayer::scan(
     const std::string& table,
-    const std::optional<std::function<bool(int, const std::vector<std::string>&)>>& /*callback*/,
-    const std::optional<std::vector<int>>& /*projection*/,
-    const std::optional<std::function<bool(const std::vector<std::string>&)>>& /*filter_func*/)
+    const std::optional<std::vector<int>>& projection,
+    const std::optional<std::function<bool(const std::vector<std::string>&)>>& filter_func,
+    const std::optional<std::vector<std::pair<int, bool>>>& order_by,
+    const std::optional<size_t>& limit,
+    const std::optional<std::pair<std::string, int>>& aggregate)
 {
     if (!is_open) {
         throw std::runtime_error("Storage not open");
@@ -666,11 +668,78 @@ std::vector<std::vector<std::string>> FileStorageLayer::scan(
             if (slot.is_occupied()) {
                 auto record_data = page.get_record(slot.record_id);
                 if (record_data.has_value()) {
-                    results.push_back(deserialize_row(schema, record_data.value()));
+                    auto row = deserialize_row(schema, record_data.value());
+                    // Apply filter (WHERE)
+                    if (filter_func && !(*filter_func)(row)) {
+                        continue;
+                    }
+                    // Apply projection
+                    if (projection) {
+                        std::vector<std::string> projected_row;
+                        for (int idx : *projection) {
+                            if (idx >= 0 && static_cast<size_t>(idx) < row.size()) {
+                                projected_row.push_back(row[idx]);
+                            }
+                        }
+                        results.push_back(std::move(projected_row));
+                    } else {
+                        results.push_back(std::move(row));
+                    }
                 }
             }
         }
         current_page_id = page.get_next_page_id();
+    }
+    // Apply ORDER BY
+    if (order_by && !order_by->empty()) {
+        std::sort(results.begin(), results.end(), [&](const std::vector<std::string>& a, const std::vector<std::string>& b) {
+            for (const auto& [col, asc] : *order_by) {
+                if (col < 0 || static_cast<size_t>(col) >= a.size() || static_cast<size_t>(col) >= b.size()) continue;
+                // Try to compare as int if possible
+                try {
+                    int ai = std::stoi(a[col]);
+                    int bi = std::stoi(b[col]);
+                    if (ai != bi) return asc ? ai < bi : ai > bi;
+                } catch (...) {
+                    if (a[col] != b[col]) return asc ? a[col] < b[col] : a[col] > b[col];
+                }
+            }
+            return false;
+        });
+    }
+    // Apply LIMIT
+    if (limit && results.size() > *limit) {
+        results.resize(*limit);
+    }
+    // Apply AGGREGATE (only SUM and ABS for INT columns supported)
+    if (aggregate) {
+        const std::string& op = aggregate->first;
+        int col = aggregate->second;
+        if (col < 0 || (results.empty() || static_cast<size_t>(col) >= results[0].size())) {
+            throw std::runtime_error("Invalid column index for aggregation");
+        }
+        if (op == "SUM") {
+            int64_t sum = 0;
+            for (const auto& row : results) {
+                try {
+                    sum += std::stoll(row[col]);
+                } catch (...) {}
+            }
+            return { { std::to_string(sum) } };
+        } else if (op == "ABS") {
+            std::vector<std::vector<std::string>> abs_results;
+            for (const auto& row : results) {
+                std::vector<std::string> abs_row = row;
+                try {
+                    int val = std::stoi(row[col]);
+                    abs_row[col] = std::to_string(std::abs(val));
+                } catch (...) {}
+                abs_results.push_back(std::move(abs_row));
+            }
+            return abs_results;
+        } else {
+            throw std::runtime_error("Unsupported aggregate operation");
+        }
     }
     return results;
 }
