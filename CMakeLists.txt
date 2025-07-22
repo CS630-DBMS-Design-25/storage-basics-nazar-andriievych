@@ -21,8 +21,6 @@ file(GLOB TEST_SOURCES
 # Create a library for your main code that can be linked to tests
 add_library(storage_lib ${SOURCES})
 
-# Add main executable
-add_executable(storage_cli ${SOURCES})
 
 # GoogleTest setup
 include(FetchContent)
@@ -51,3 +49,26 @@ target_include_directories(storage_cli_tests PRIVATE ${CMAKE_SOURCE_DIR}/include
 
 include(GoogleTest)
 gtest_discover_tests(storage_cli_tests)
+
+# Add SQL executable for SQL integration
+# SQL CLI executable
+add_executable(sql_cli
+    src/sql_cli.cpp
+    src/sql_lexer.cpp
+    src/sql_parser.cpp
+    src/sql_ast.cpp
+    src/sql_executor.cpp
+    src/storage_layer.cpp
+)
+target_include_directories(sql_cli PRIVATE include)
+
+# Storage CLI executable (original, non-SQL)
+add_executable(storage_cli
+    src/storage_cli.cpp
+    src/storage_layer.cpp
+)
+target_include_directories(storage_cli PRIVATE include)
+
+target_link_libraries(sql_cli PRIVATE
+    # Add any required libraries here, e.g., for gtest or filesystem
+)

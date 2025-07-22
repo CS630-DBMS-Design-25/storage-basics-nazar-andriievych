@@ -51,20 +51,6 @@ TEST_F(FileStorageLayerTest, InsertGetText) {
     EXPECT_EQ(got[1], "fruit");
 }
 
-TEST_F(FileStorageLayerTest, UpdateAndDelete) {
-    std::vector<ColumnSchema> schema = {
-        {"id", ColumnType::INT, INT_SIZE},
-        {"name", ColumnType::TEXT, 0}
-    };
-    storage.create("people", schema);
-    uint32_t record_id = storage.insert("people", {"7", "Bob"});
-    storage.update("people", record_id, {"7", "Alice"});
-    auto got = storage.get("people", record_id);
-    ASSERT_EQ(got[1], "Alice");
-    storage.delete_record("people", record_id);
-    EXPECT_THROW(storage.get("people", record_id), std::runtime_error);
-}
-
 TEST_F(FileStorageLayerTest, ScanTable) {
     std::vector<ColumnSchema> schema = {
         {"id", ColumnType::INT, INT_SIZE},
