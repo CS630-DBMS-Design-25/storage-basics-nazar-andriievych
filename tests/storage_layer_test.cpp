@@ -94,3 +94,72 @@ TEST_F(FileStorageLayerTest, OpenClosePersistence) {
     ASSERT_EQ(got[0], "99");
     ASSERT_EQ(got[1], "Zed");
 }
+
+TEST_F(FileStorageLayerTest, ScanProjectionAndWhere) {
+    std::vector<ColumnSchema> schema = {
+        {"id", ColumnType::INT, INT_SIZE},
+        {"age", ColumnType::INT, INT_SIZE},
+        {"name", ColumnType::TEXT, 0}
+    };
+    storage.create("projwhere", schema);
+    storage.insert("projwhere", {"1", "20", "Alice"});
+    storage.insert("projwhere", {"2", "30", "Bob"});
+    storage.insert("projwhere", {"3", "40", "Carol"});
+    // Projection: only age and name
+    std::vector<int> proj = {1, 2};
+    // Filter: age >= 30
+    auto filter = [](const std::vector<std::string>& row) {
+        return std::stoi(row[1]) >= 30;
+    };
+    auto rows = storage.scan("projwhere", proj, filter);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0][1], "Bob");
+    EXPECT_EQ(rows[1][1], "Carol");
+}
+
+TEST_F(FileStorageLayerTest, ScanOrderByAndLimit) {
+    std::vector<ColumnSchema> schema = {
+        {"id", ColumnType::INT, INT_SIZE},
+        {"score", ColumnType::INT, INT_SIZE},
+        {"name", ColumnType::TEXT, 0}
+    };
+    storage.create("orderlim", schema);
+    storage.insert("orderlim", {"1", "50", "X"});
+    storage.insert("orderlim", {"2", "70", "Y"});
+    storage.insert("orderlim", {"3", "60", "Z"});
+    // Order by score descending, limit 2
+    std::vector<std::pair<int, bool>> order = { {1, false} };
+    size_t lim = 2;
+    auto rows = storage.scan("orderlim", std::nullopt, std::nullopt, order, lim);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0][2], "Y");
+    EXPECT_EQ(rows[1][2], "Z");
+}
+
+TEST_F(FileStorageLayerTest, ScanSumAggregate) {
+    std::vector<ColumnSchema> schema = {
+        {"id", ColumnType::INT, INT_SIZE},
+        {"val", ColumnType::INT, INT_SIZE}
+    };
+    storage.create("sumagg", schema);
+    storage.insert("sumagg", {"1", "10"});
+    storage.insert("sumagg", {"2", "20"});
+    storage.insert("sumagg", {"3", "-5"});
+    auto rows = storage.scan("sumagg", std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::make_pair(std::string("SUM"), 1));
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0][0], "25");
+}
+
+TEST_F(FileStorageLayerTest, ScanAbsAggregate) {
+    std::vector<ColumnSchema> schema = {
+        {"id", ColumnType::INT, INT_SIZE},
+        {"val", ColumnType::INT, INT_SIZE}
+    };
+    storage.create("absagg", schema);
+    storage.insert("absagg", {"1", "-7"});
+    storage.insert("absagg", {"2", "3"});
+    auto rows = storage.scan("absagg", std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::make_pair(std::string("ABS"), 1));
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0][1], "7");
+    EXPECT_EQ(rows[1][1], "3");
+}
